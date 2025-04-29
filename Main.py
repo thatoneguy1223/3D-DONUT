@@ -1,86 +1,165 @@
-import os
 import math
 import time
-import threading
-import shutil
+import curses
 
-# Function to clear the console screen
-def clear_console():
-    os.system('cls' if os.name == 'nt' else 'clear')
+def donut_animation(stdscr):
+    # Hide the cursor and enable non-blocking input.
+    curses.curs_set(0)
+    stdscr.nodelay(True)
 
-# Donut constants
-A = 0  # Rotation angle around X-axis
-B = 0  # Rotation angle around Y-axis
-R1 = 1.5  # Smaller tube radius (adjusted for better appearance)
-R2 = 3    # Larger body radius (adjusted for proportion)
-K2 = 7    # Distance constant
-running = True  # Flag to control the loop
+    # Try to enable color support.
+    use_colors = False
+    color_pairs = []
+    if curses.has_colors():
+        curses.start_color()
+        try:
+            curses.use_default_colors()
+        except curses.error:
+            pass
+        # Define a gradient of colors from dark to light.
+        shade_colors = [
+            curses.COLOR_BLACK, curses.COLOR_BLUE, curses.COLOR_CYAN,
+            curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_MAGENTA,
+            curses.COLOR_RED, curses.COLOR_WHITE
+        ]
+        for i, col in enumerate(shade_colors):
+            try:
+                curses.init_pair(i + 1, col, -1)
+                color_pairs.append(curses.color_pair(i + 1))
+            except curses.error:
+                pass
+        use_colors = True
 
-def get_terminal_size():
-    """Get the size of the terminal window."""
-    size = shutil.get_terminal_size()
-    return size.columns, size.lines
+    # Donut geometry parameters.
+    R1 = 1.0    # Radius of the tube (the small circle).
+    R2 = 2.0    # Distance from the torus center to the tube center.
+    K2 = 5.0    # Distance offset for perspective.
 
-def render_frame(A, B, width, height):
-    output = [[' ' for _ in range(width)] for _ in range(height)]
-    zbuffer = [[0 for _ in range(width)] for _ in range(height)]
+    # Initial rotation angles.
+    A = 0.0
+    B = 0.0
 
-    cos_A, sin_A = math.cos(A), math.sin(A)
-    cos_B, sin_B = math.cos(B), math.sin(B)
+    # ASCII luminance gradient.
+    luminance_chars = ".,-~:;=!*#$@"
 
-    K1 = min(width, height) // 2.2  # Dynamically adjust scaling for proportion
+    while True:
+        height, width = stdscr.getmaxyx()
+        # Projection constant scaling with the terminal width.
+        K1 = width * K2 / (8 * (R1 + R2))
 
-    for theta in range(0, 628, 3):  # Finer resolution for smoother edges
-        for phi in range(0, 628, 3):
-            # Torus parametric equations
-            sin_theta, cos_theta = math.sin(theta / 100), math.cos(theta / 100)
-            sin_phi, cos_phi = math.sin(phi / 100), math.cos(phi / 100)
+        # Create buffers for output characters and depth (z-buffer).
+        output = [[' ' for _ in range(width)] for _ in range(height)]
+        zbuffer = [[0.0 for _ in range(width)] for _ in range(height)]
+        color_buffer = (
+            [[0 for _ in range(width)] for _ in range(height)]
+            if use_colors
+            else None
+        )
 
-            x = (R2 + R1 * cos_theta) * cos_phi
-            y = (R2 + R1 * cos_theta) * sin_phi
-            z = R1 * sin_theta
+        cosA = math.cos(A)
+        sinA = math.sin(A)
+        cosB = math.cos(B)
+        sinB = math.sin(B)
 
-            # Rotate around X and Y axes
-            x_rot = cos_B * x + sin_B * (sin_A * y + cos_A * z)
-            y_rot = cos_A * y - sin_A * z
-            z_rot = K2 + cos_B * (sin_A * y + cos_A * z) - sin_B * x
+        # Use a fine angular step for better detail.
+        for theta in range(0, 628, 2):  # theta in [0, 6.28)
+            for phi in range(0, 628, 2):  # phi in [0, 6.28)
+                th = theta / 100.0
+                ph = phi / 100.0
 
-            # Perspective projection
-            ooz = 1 / z_rot
-            xp = int(width / 2 + K1 * ooz * x_rot)  # Center the donut horizontally
-            yp = int(height / 2 - K1 * ooz * y_rot)  # Center the donut vertically
+                cos_th = math.cos(th)
+                sin_th = math.sin(th)
+                cos_ph = math.cos(ph)
+                sin_ph = math.sin(ph)
 
-            # Calculate luminance for shading
-            L = cos_phi * cos_theta * sin_B - cos_A * cos_theta * sin_phi - sin_A * sin_theta + cos_B * (cos_A * sin_theta - cos_theta * sin_phi)
+                # Compute torus parameters.
+                circle_x = R2 + R1 * cos_th
+                circle_y = R1 * sin_th
 
-            if L > 0:  # Only render visible surfaces
-                if 0 <= xp < width and 0 <= yp < height and ooz > zbuffer[yp][xp]:
-                    zbuffer[yp][xp] = ooz
-                    luminance_index = int(L * 8)
-                    luminance_index = min(max(luminance_index, 0), len(".,-~:;=!*#$@") - 1)
-                    luminance = ".,-~:;=!*#$@"[luminance_index]
-                    output[yp][xp] = luminance
+                # 3D coordinates before rotation.
+                x = circle_x * cos_ph
+                y = circle_x * sin_ph
+                z = circle_y
 
-    # Render the frame
-    clear_console()
-    for row in output:
-        print(''.join(row))
+                # Apply rotation about the X-axis.
+                x1 = x
+                y1 = cosA * y - sinA * z
+                z1 = sinA * y + cosA * z
 
-def animation_loop():
-    global A, B, running
-    width, height = get_terminal_size()  # Get terminal dimensions
-    while running:
-        render_frame(A, B, width, height)
-        A += 0.03  # Smooth rotation speed around X-axis
-        B += 0.06  # Smooth rotation speed around Y-axis
-        time.sleep(0.03)  # Delay for smoother animation
+                # Apply rotation about the Z-axis.
+                x2 = cosB * x1 - sinB * y1
+                y2 = sinB * x1 + cosB * y1
+                z2 = z1 + K2  # Translate away from viewer.
 
-# Graceful exit on user input
-def listen_for_exit():
-    global running
-    input("Press Enter to stop the animation...\n")
-    running = False
+                if z2 == 0:
+                    continue
+                ooz = 1 / z2  # "One over z" for perspective scaling.
 
-# Run the animation in a separate thread to allow user input
-threading.Thread(target=listen_for_exit, daemon=True).start()
-animation_loop()
+                # 2D screen projection.
+                xp = int(width / 2 + K1 * ooz * x2)
+                yp = int(height / 2 - K1 * ooz * y2)
+
+                # Compute the surface normal (for shading determination).
+                nx = cos_th * cos_ph
+                ny = cos_th * sin_ph
+                nz = sin_th
+
+                # Rotate the normal using the same transforms.
+                ny_rot = cosA * ny - sinA * nz
+                nz_rot = sinA * ny + cosA * nz
+                nx_rot = cosB * nx - sinB * ny_rot
+                ny_rot2 = sinB * nx + cosB * ny_rot
+                nz_rot2 = nz_rot
+
+                # Define a fixed (normalized) light vector.
+                Lx, Ly, Lz = 0, 1, -1
+                L_len = math.sqrt(Lx**2 + Ly**2 + Lz**2)
+                Lx, Ly, Lz = Lx / L_len, Ly / L_len, Lz / L_len
+
+                # Dot product gives the luminance.
+                L = nx_rot * Lx + ny_rot2 * Ly + nz_rot2 * Lz
+
+                if L > 0 and 0 <= xp < width and 0 <= yp < height:
+                    if ooz > zbuffer[yp][xp]:
+                        zbuffer[yp][xp] = ooz
+                        luminance_index = int(L * (len(luminance_chars) - 1))
+                        luminance_index = max(0, min(luminance_index, len(luminance_chars) - 1))
+                        output[yp][xp] = luminance_chars[luminance_index]
+                        if use_colors:
+                            color_idx = int(
+                                luminance_index * (len(color_pairs) - 1) / (len(luminance_chars) - 1)
+                            )
+                            color_buffer[yp][xp] = color_pairs[color_idx]
+
+        # Render the frame.
+        stdscr.erase()
+        if not use_colors:
+            for r, row in enumerate(output):
+                try:
+                    stdscr.addstr(r, 0, "".join(row))
+                except curses.error:
+                    pass
+        else:
+            for r in range(height):
+                for c in range(width):
+                    try:
+                        ch = output[r][c]
+                        attr = color_buffer[r][c]
+                        stdscr.addch(r, c, ch, attr)
+                    except curses.error:
+                        pass
+        stdscr.refresh()
+
+        # Update rotation angles for animation.
+        A += 0.04
+        B += 0.02
+
+        time.sleep(0.02)
+        if stdscr.getch() != -1:
+            break
+
+def main():
+    curses.wrapper(donut_animation)
+
+if __name__ == "__main__":
+    main()
